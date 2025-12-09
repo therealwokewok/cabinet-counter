@@ -125,7 +125,7 @@ const computePanelsForRow = (row) => {
     panelType: "Brace",
     width: boxWidth - 1.5,
     height: braceHeight,
-    count: 3 * quantity,
+    count: 4 * quantity,
     cabinetLabel,
   });
 
