@@ -1,0 +1,16 @@
+/* Show full label text on medium+ screens, short text on small screens */
+.label-full {
+  display: inline;
+}
+.label-short {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .label-full {
+    display: none;
+  }
+  .label-short {
+    display: inline;
+  }
+}
