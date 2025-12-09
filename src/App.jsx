@@ -11,12 +11,22 @@ import {
   Divider,
 } from "reshaped";
 
+// Responsive label helper (full text on desktop, short on small screens)
+const ResponsiveLabel = ({ full, short }) => (
+  <span>
+    <span className="label-full">{full}</span>
+    <span className="label-short">{short}</span>
+  </span>
+);
+
 // Create a blank cabinet row
 const createEmptyRow = (id) => ({
   id,
   label: "",
   cabinetHeight: "",
   kickHeight: "",
+  // boxHeight is derived, but we keep a field for compatibility;
+  // it will be ignored as an input.
   boxHeight: "",
   boxWidth: "",
   boxDepth: "",
@@ -24,32 +34,26 @@ const createEmptyRow = (id) => ({
   quantity: "1",
 });
 
-// Parse numeric inputs safely
+// Safe number parser
 const parseNumber = (value) => {
   if (value === "" || value === null || value === undefined) return null;
   const n = parseFloat(value);
   return Number.isFinite(n) ? n : null;
 };
 
-// Compute effective box height using your Excel logic
+// Compute effective box height strictly from cabinet & kick
 const getEffectiveBoxHeight = (row) => {
   const cabinetHeight = parseNumber(row.cabinetHeight);
   const kickHeight = parseNumber(row.kickHeight);
-  const boxHeightInput = parseNumber(row.boxHeight);
-
-  if (cabinetHeight != null && kickHeight != null) {
-    return cabinetHeight - kickHeight;
-  }
-  return boxHeightInput;
+  if (cabinetHeight == null || kickHeight == null) return null;
+  return cabinetHeight - kickHeight;
 };
 
 /**
  * Panel logic for one cabinet spec
  *
- * Matches your spreadsheet:
- *
- * BoxHeight = CabinetHeight - KickHeight (if both provided),
- * otherwise uses entered BoxHeight.
+ * Uses:
+ *  BoxHeight = CabinetHeight - KickHeight
  *
  * Per ONE cabinet:
  *  - Walls (Left & Right): 2 pcs
@@ -87,37 +91,42 @@ const computePanelsForRow = (row) => {
   }
 
   const panels = [];
+  const cabinetLabel = (row.label || "").trim() || "Unlabeled";
 
   // Walls (Left & Right) – 2 pcs
   panels.push({
-    label: "Wall",
+    panelType: "Wall",
     width: boxDepth,
     height: boxHeightEffective,
     count: 2 * quantity,
+    cabinetLabel,
   });
 
   // Floor – 1 pc
   panels.push({
-    label: "Floor",
+    panelType: "Floor",
     width: boxWidth - 0.75,
     height: boxDepth,
     count: 1 * quantity,
+    cabinetLabel,
   });
 
   // Back – 1 pc
   panels.push({
-    label: "Back",
+    panelType: "Back",
     width: boxWidth - 0.75,
     height: boxHeightEffective - 1.5,
     count: 1 * quantity,
+    cabinetLabel,
   });
 
   // Braces – 3 pcs
   panels.push({
-    label: "Brace",
+    panelType: "Brace",
     width: boxWidth - 1.5,
     height: braceHeight,
     count: 3 * quantity,
+    cabinetLabel,
   });
 
   return panels.filter(
@@ -127,7 +136,8 @@ const computePanelsForRow = (row) => {
 
 /**
  * Aggregate panels over all rows.
- * Group by (label + width + height), and sum counts.
+ * Group by (panelType + width + height), and sum counts.
+ * Also collect which cabinet labels contribute to each group.
  */
 const aggregatePanels = (rows) => {
   const map = new Map();
@@ -135,26 +145,38 @@ const aggregatePanels = (rows) => {
   rows.forEach((row) => {
     const panels = computePanelsForRow(row);
     panels.forEach((panel) => {
-      const { label, width, height, count } = panel;
-      const key = `${label}|${width}|${height}`;
+      const { panelType, width, height, count, cabinetLabel } = panel;
+      const key = `${panelType}|${width}|${height}`;
       const existing = map.get(key) || {
-        label,
+        panelType,
         width,
         height,
         count: 0,
+        cabinetLabels: new Set(),
       };
       existing.count += count;
+      if (cabinetLabel) {
+        existing.cabinetLabels.add(cabinetLabel);
+      }
       map.set(key, existing);
     });
   });
 
-  const list = Array.from(map.values());
+  const list = Array.from(map.values()).map((item) => ({
+    panelType: item.panelType,
+    width: item.width,
+    height: item.height,
+    count: item.count,
+    cabinets: Array.from(item.cabinetLabels).sort().join(", "),
+  }));
+
   list.sort((a, b) => {
-    if (a.label < b.label) return -1;
-    if (a.label > b.label) return 1;
+    if (a.panelType < b.panelType) return -1;
+    if (a.panelType > b.panelType) return 1;
     if (a.width !== b.width) return a.width - b.width;
     return a.height - b.height;
   });
+
   return list;
 };
 
@@ -199,7 +221,7 @@ const App = () => {
     const exampleRows = [
       {
         id: 1,
-        label: "Base 30\"",
+        label: 'Base 30"',
         cabinetHeight: "34.5",
         kickHeight: "4.5",
         boxHeight: "",
@@ -210,7 +232,7 @@ const App = () => {
       },
       {
         id: 2,
-        label: "Upper 30\"",
+        label: 'Upper 30"',
         cabinetHeight: "30",
         kickHeight: "0",
         boxHeight: "",
@@ -237,9 +259,9 @@ const App = () => {
   const handleExportCSV = () => {
     if (!panelSummary.length) return;
 
-    const header = "Label,Width,Height,Count";
+    const header = "PanelType,Width,Height,Count,Cabinets";
     const lines = panelSummary.map((p) =>
-      [p.label, p.width, p.height, p.count].join(",")
+      [p.panelType, p.width, p.height, p.count, p.cabinets].join(",")
     );
     const csv = [header, ...lines].join("\n");
 
@@ -280,7 +302,7 @@ const App = () => {
                 <Text variant="body-2" color="neutral-faded">
                   Enter cabinet styles and quantities. The app
                   calculates a consolidated cut-list using your
-                  spreadsheet’s panel logic.
+                  panel formulas.
                 </Text>
               </View>
 
@@ -358,24 +380,60 @@ const App = () => {
                     <Table border columnBorder>
                       <Table.Row highlighted>
                         <Table.Heading>#</Table.Heading>
-                        <Table.Heading>Label</Table.Heading>
-                        <Table.Heading>Cab H</Table.Heading>
-                        <Table.Heading>Kick H</Table.Heading>
-                        <Table.Heading>Box H</Table.Heading>
-                        <Table.Heading>Box W</Table.Heading>
-                        <Table.Heading>Depth</Table.Heading>
-                        <Table.Heading>Brace H</Table.Heading>
-                        <Table.Heading>Qty</Table.Heading>
+                        <Table.Heading>
+                          <ResponsiveLabel
+                            full="Cabinet label"
+                            short="Label"
+                          />
+                        </Table.Heading>
+                        <Table.Heading>
+                          <ResponsiveLabel
+                            full="Cabinet height"
+                            short="Cab H"
+                          />
+                        </Table.Heading>
+                        <Table.Heading>
+                          <ResponsiveLabel
+                            full="Kick height"
+                            short="Kick H"
+                          />
+                        </Table.Heading>
+                        <Table.Heading>
+                          <ResponsiveLabel
+                            full="Box height"
+                            short="Box H"
+                          />
+                        </Table.Heading>
+                        <Table.Heading>
+                          <ResponsiveLabel
+                            full="Box width"
+                            short="Box W"
+                          />
+                        </Table.Heading>
+                        <Table.Heading>
+                          <ResponsiveLabel
+                            full="Box depth"
+                            short="Depth"
+                          />
+                        </Table.Heading>
+                        <Table.Heading>
+                          <ResponsiveLabel
+                            full="Brace height"
+                            short="Brace H"
+                          />
+                        </Table.Heading>
+                        <Table.Heading>
+                          <ResponsiveLabel
+                            full="Quantity"
+                            short="Qty"
+                          />
+                        </Table.Heading>
                         <Table.Heading />
                       </Table.Row>
 
                       {rows.map((row, index) => {
                         const boxHeightEff =
                           getEffectiveBoxHeight(row);
-                        const hasDerived =
-                          parseNumber(row.cabinetHeight) !=
-                            null &&
-                          parseNumber(row.kickHeight) != null;
 
                         return (
                           <Table.Row key={row.id}>
@@ -386,14 +444,13 @@ const App = () => {
                               </Text>
                             </Table.Cell>
 
-                            {/* Label */}
+                            {/* Cabinet label */}
                             <Table.Cell>
                               <FormControl size="small">
                                 <FormControl.Label>
-                                  Name
+                                  Label
                                 </FormControl.Label>
                                 <TextField
-                                  placeholder="Base 30&quot; / Sink / Pantry…"
                                   size="small"
                                   value={row.label}
                                   onChange={({ value }) =>
@@ -411,11 +468,17 @@ const App = () => {
                             <Table.Cell>
                               <FormControl size="small">
                                 <FormControl.Label>
-                                  Cab H
+                                  <ResponsiveLabel
+                                    full="Cabinet"
+                                    short="Cab"
+                                  />{" "}
+                                  <ResponsiveLabel
+                                    full="height"
+                                    short="H"
+                                  />
                                 </FormControl.Label>
                                 <TextField
                                   type="number"
-                                  placeholder="34.5"
                                   suffix="in"
                                   size="small"
                                   value={row.cabinetHeight}
@@ -434,11 +497,17 @@ const App = () => {
                             <Table.Cell>
                               <FormControl size="small">
                                 <FormControl.Label>
-                                  Kick H
+                                  <ResponsiveLabel
+                                    full="Kick"
+                                    short="Kick"
+                                  />{" "}
+                                  <ResponsiveLabel
+                                    full="height"
+                                    short="H"
+                                  />
                                 </FormControl.Label>
                                 <TextField
                                   type="number"
-                                  placeholder="4.5"
                                   suffix="in"
                                   size="small"
                                   value={row.kickHeight}
@@ -453,36 +522,29 @@ const App = () => {
                               </FormControl>
                             </Table.Cell>
 
-                            {/* Box Height (with derived hint) */}
+                            {/* Box Height (derived, read-only) */}
                             <Table.Cell>
                               <FormControl size="small">
                                 <FormControl.Label>
-                                  Box H
-                                  {hasDerived &&
-                                    boxHeightEff != null && (
-                                      <Text
-                                        as="span"
-                                        variant="caption-2"
-                                        color="neutral-faded"
-                                      >
-                                        {" "}
-                                        (auto: {boxHeightEff})
-                                      </Text>
-                                    )}
+                                  <ResponsiveLabel
+                                    full="Box"
+                                    short="Box"
+                                  />{" "}
+                                  <ResponsiveLabel
+                                    full="height"
+                                    short="H"
+                                  />
                                 </FormControl.Label>
                                 <TextField
                                   type="number"
-                                  placeholder="optional"
                                   suffix="in"
                                   size="small"
-                                  value={row.boxHeight}
-                                  onChange={({ value }) =>
-                                    handleChange(
-                                      row.id,
-                                      "boxHeight",
-                                      value
-                                    )
+                                  value={
+                                    boxHeightEff != null
+                                      ? String(boxHeightEff)
+                                      : ""
                                   }
+                                  disabled
                                 />
                               </FormControl>
                             </Table.Cell>
@@ -491,11 +553,17 @@ const App = () => {
                             <Table.Cell>
                               <FormControl size="small">
                                 <FormControl.Label>
-                                  Box W
+                                  <ResponsiveLabel
+                                    full="Box"
+                                    short="Box"
+                                  />{" "}
+                                  <ResponsiveLabel
+                                    full="width"
+                                    short="W"
+                                  />
                                 </FormControl.Label>
                                 <TextField
                                   type="number"
-                                  placeholder="30"
                                   suffix="in"
                                   size="small"
                                   value={row.boxWidth}
@@ -514,11 +582,13 @@ const App = () => {
                             <Table.Cell>
                               <FormControl size="small">
                                 <FormControl.Label>
-                                  Depth
+                                  <ResponsiveLabel
+                                    full="Box depth"
+                                    short="Depth"
+                                  />
                                 </FormControl.Label>
                                 <TextField
                                   type="number"
-                                  placeholder="24"
                                   suffix="in"
                                   size="small"
                                   value={row.boxDepth}
@@ -537,11 +607,17 @@ const App = () => {
                             <Table.Cell>
                               <FormControl size="small">
                                 <FormControl.Label>
-                                  Brace H
+                                  <ResponsiveLabel
+                                    full="Brace"
+                                    short="Brace"
+                                  />{" "}
+                                  <ResponsiveLabel
+                                    full="height"
+                                    short="H"
+                                  />
                                 </FormControl.Label>
                                 <TextField
                                   type="number"
-                                  placeholder="3"
                                   suffix="in"
                                   size="small"
                                   value={row.braceHeight}
@@ -560,11 +636,13 @@ const App = () => {
                             <Table.Cell>
                               <FormControl size="small">
                                 <FormControl.Label>
-                                  Qty
+                                  <ResponsiveLabel
+                                    full="Quantity"
+                                    short="Qty"
+                                  />
                                 </FormControl.Label>
                                 <TextField
                                   type="number"
-                                  placeholder="1"
                                   size="small"
                                   value={row.quantity}
                                   onChange={({ value }) =>
@@ -635,8 +713,9 @@ const App = () => {
                       variant="caption-1"
                       color="neutral-faded"
                     >
-                      Grouped by label and size. Updates live as
-                      you edit.
+                      Grouped by panel type and size. Uses cabinet
+                      labels so you can see where each panel comes
+                      from.
                     </Text>
                   </View>
 
@@ -711,26 +790,19 @@ const App = () => {
                       >
                         <Table border columnBorder>
                           <Table.Row highlighted>
-                            <Table.Heading>
-                              Label
-                            </Table.Heading>
-                            <Table.Heading>
-                              Width
-                            </Table.Heading>
-                            <Table.Heading>
-                              Height
-                            </Table.Heading>
-                            <Table.Heading>
-                              Count
-                            </Table.Heading>
+                            <Table.Heading>Type</Table.Heading>
+                            <Table.Heading>Width</Table.Heading>
+                            <Table.Heading>Height</Table.Heading>
+                            <Table.Heading>Count</Table.Heading>
+                            <Table.Heading>Cabinets</Table.Heading>
                           </Table.Row>
                           {panelSummary.map((p, idx) => (
                             <Table.Row
-                              key={`${p.label}-${idx}-${p.width}-${p.height}`}
+                              key={`${p.panelType}-${idx}-${p.width}-${p.height}`}
                             >
                               <Table.Cell>
                                 <Text variant="body-3">
-                                  {p.label}
+                                  {p.panelType}
                                 </Text>
                               </Table.Cell>
                               <Table.Cell>
@@ -746,6 +818,11 @@ const App = () => {
                               <Table.Cell>
                                 <Text variant="body-3">
                                   {p.count}
+                                </Text>
+                              </Table.Cell>
+                              <Table.Cell>
+                                <Text variant="body-3">
+                                  {p.cabinets || "—"}
                                 </Text>
                               </Table.Cell>
                             </Table.Row>
